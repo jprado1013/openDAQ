@@ -9,6 +9,12 @@
 #include <opendaq/signal_factory.h>
 #include "websocket_streaming/signal_descriptor_converter.h"
 
+#include "websocket_streaming/can_data_struct.h"
+#include <iostream> 
+#include <chrono>
+
+static std::chrono::steady_clock::time_point lastLogTime;
+
 BEGIN_NAMESPACE_OPENDAQ_WEBSOCKET_STREAMING
 
 using namespace daq::streaming_protocol;
@@ -35,6 +41,10 @@ OutputSignalBase::~OutputSignalBase()
 
 void OutputSignalBase::createStreamedSignal()
 {
+    //std::cout << "SampleType do sinal: " << static_cast<int>(daqSignal.getDescriptor().getSampleType()) << std::endl;
+    std::cout << "createStreamedSignal - SampleType of the Signal: " << static_cast<int>(daqSignal.getDescriptor().getSampleType())
+    << ", SignalName: " << daqSignal.getName() << std::endl;
+
     const auto context = daqSignal.getContext();
 
     streamedDaqSignal = SignalWithDescriptor(context, daqSignal.getDescriptor(), nullptr, daqSignal.getLocalId());
@@ -462,15 +472,41 @@ BaseSynchronousSignalPtr OutputSyncValueSignal::createSignalStream(
         case daq::SampleType::Float64:
             syncStream = std::make_shared<SynchronousSignal<double>>(signalId, tableId, *writer, logCb);
             break;
+
+        case daq::SampleType::Struct:
+        {
+            auto descriptor = signal.getDescriptor();
+            if (descriptor.assigned())
+            {
+                auto structFields = descriptor.getStructFields();
+                if (structFields.assigned() && structFields.getCount() == 3)
+                {
+                    auto field0 = structFields.getItemAt(0);
+                    auto field1 = structFields.getItemAt(1);
+                    auto field2 = structFields.getItemAt(2);
+
+                    if (field0.getName() == "ArbId" && 
+                        field1.getName() == "Length" &&
+                        field2.getName() == "Data")
+                    {
+                        syncStream = std::make_shared<SynchronousSignal<CANData>>(signalId, tableId, *writer, logCb);
+                        break;
+                    }
+                }
+            }
+
+            DAQ_THROW_EXCEPTION(InvalidTypeException, "Unsupported struct format - expected CANData structure.");
+        }
+        break;
+
         case daq::SampleType::ComplexFloat32:
         case daq::SampleType::ComplexFloat64:
         case daq::SampleType::Binary:
         case daq::SampleType::Invalid:
         case daq::SampleType::String:
         case daq::SampleType::RangeInt64:
-        case daq::SampleType::Struct:
         default:
-            DAQ_THROW_EXCEPTION(InvalidTypeException, "Unsupported data signal sample type - only real numeric types are supported");
+            DAQ_THROW_EXCEPTION(InvalidTypeException, "Unsupported data signal sample type - only real numeric types or CANData struct are supported");
     }
 
     SignalDescriptorConverter::ToStreamedValueSignal(signal, syncStream, getSignalProps(signal));
@@ -492,7 +528,21 @@ void OutputSyncValueSignal::writeDataPacket(const DataPacketPtr& packet)
     const auto domainPacket = packet.getDomainPacket();
     if (!domainPacket.assigned() || !domainPacket.getDataDescriptor().assigned())
     {
-        STREAMING_PROTOCOL_LOG_E("streaming-lt: cannot stream data packet without domain packet / descriptor");
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastLogTime);
+
+        if (elapsed.count() >= 1) // passou 1 segundo ou mais
+        {
+            std::string signalName = "<unknown>";
+            if (daqSignal.assigned())
+                signalName = daqSignal.getName().toStdString();
+
+            STREAMING_PROTOCOL_LOG_E(
+                "streaming-lt: cannot stream data packet without domain packet / descriptor [Signal: {}]",
+                signalName
+            );
+            lastLogTime = now;
+        }
         return;
     }
     const auto packetDomainDescriptor = domainPacket.getDataDescriptor();
@@ -597,6 +647,31 @@ BaseConstantSignalPtr OutputConstValueSignal::createSignalStream(
         case daq::SampleType::String:
         case daq::SampleType::RangeInt64:
         case daq::SampleType::Struct:
+        {
+            auto descriptor = signal.getDescriptor();
+            if (descriptor.assigned())
+            {
+                auto structFields = descriptor.getStructFields();
+                if (structFields.assigned() && structFields.getCount() == 3)
+                {
+                    auto field0 = structFields.getItemAt(0);
+                    auto field1 = structFields.getItemAt(1);
+                    auto field2 = structFields.getItemAt(2);
+
+                    if (field0.getName() == "ArbId" && 
+                        field1.getName() == "Length" &&
+                        field2.getName() == "Data")
+                    {
+                        constStream = std::make_shared<ConstantSignal<CANData>>(signalId, tableId, *writer, nlohmann::json(nullptr), logCb);
+
+                        break;
+                    }
+                }
+            }
+
+            DAQ_THROW_EXCEPTION(InvalidTypeException, "Unsupported struct format - expected CANData structure.");
+        }
+        break;
         default:
             DAQ_THROW_EXCEPTION(InvalidTypeException, "Unsupported data signal sample type - only real numeric types are supported");
     }
