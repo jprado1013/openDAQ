@@ -287,6 +287,8 @@ daq::SampleType SignalDescriptorConverter::Convert(daq::streaming_protocol::Samp
             return daq::SampleType::UInt32;
         case daq::streaming_protocol::SampleType::SAMPLETYPE_BITFIELD64:
             return daq::SampleType::UInt64;
+        case daq::streaming_protocol::SampleType::SAMPLETYPE_STRUCT:
+            return daq::SampleType::Struct;
         default:
             DAQ_THROW_EXCEPTION(ConversionFailedException, "Unsupported input sample type");
     }
